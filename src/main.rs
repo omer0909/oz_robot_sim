@@ -1,6 +1,10 @@
+use bevy::ecs::prelude::*;
+use bevy::scene::prelude::*;
 use bevy::{
+    asset::RenderAssetUsages,
     camera::Exposure,
     core_pipeline::{Skybox, tonemapping::Tonemapping},
+    gltf::GltfLoaderSettings,
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     light::{CascadeShadowConfigBuilder, light_consts::lux},
     post_process::bloom::Bloom,
@@ -12,20 +16,53 @@ use std::f32::consts::PI;
 
 use avian3d::spatial_query::SpatialQueryFilter;
 use avian3d::{math::Quaternion, prelude::*};
-#[derive(Component)]
+
+use bevy::asset::LoadContext;
+use bevy::ecs::world::EntityWorldMut;
+use bevy::gltf::extensions::{GltfExtensionHandler, GltfExtensionHandlers};
+use gltf;
+
+#[derive(Component, Default)]
 struct LookCamera {
     clicked_forward_distance: f32,
     clicked_pos: Vec3,
     camera_angle: Vec3,
 }
 
-impl LookCamera {
-    fn default() -> Self {
-        LookCamera {
-            clicked_forward_distance: 0.0,
-            clicked_pos: Vec3::ZERO,
-            camera_angle: Vec3::ZERO,
-        }
+#[derive(Component, Default)]
+struct Robot;
+
+#[derive(Component, Default)]
+struct Scene;
+
+#[derive(PhysicsLayer, Default)]
+enum GameLayer {
+    #[default]
+    Default,
+    Robot,
+}
+
+#[derive(Component, Reflect)]
+#[reflect(Component)]
+struct LoadedMesh;
+
+#[derive(Default, Clone)]
+struct CollisionExtension;
+
+impl GltfExtensionHandler for CollisionExtension {
+    fn dyn_clone(&self) -> Box<dyn GltfExtensionHandler> {
+        Box::new(self.clone())
+    }
+
+    fn on_spawn_mesh_and_material(
+        &mut self,
+        _: &mut LoadContext<'_>,
+        _: &gltf::Primitive,
+        _: &gltf::Mesh,
+        _: &gltf::Material,
+        entity: &mut EntityWorldMut,
+    ) {
+        entity.insert(LoadedMesh);
     }
 }
 
@@ -34,7 +71,13 @@ fn spawn(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
+    handlers: ResMut<GltfExtensionHandlers>,
 ) {
+    handlers
+        .0
+        .write_blocking()
+        .push(Box::new(CollisionExtension));
+
     let texture_handle = asset_server.load("Ryfjallet_cubemap_bc7.ktx2");
     commands.spawn((
         Camera3d::default(),
@@ -68,15 +111,71 @@ fn spawn(
     ));
 
     commands.spawn((
-        Transform::default(),
-        Mesh3d(meshes.add(Cuboid::new(1.0, 1.0, 1.0))),
-        MeshMaterial3d(materials.add(Color::WHITE)),
-        RigidBody::Static,
-        Collider::cuboid(1.0, 1.0, 1.0),
+        DirectionalLight::default(),
+        Transform::from_xyz(5.0, 10.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+
+    commands.spawn((
+        SceneRoot(asset_server.load_with_settings(
+            "scene.glb#Scene0",
+            |settings: &mut GltfLoaderSettings| {
+                settings.load_meshes = RenderAssetUsages::all();
+            },
+        )),
+        Scene,
+    ));
+
+    commands.spawn((
+        SceneRoot(asset_server.load_with_settings(
+            "robot.glb#Scene0",
+            |settings: &mut GltfLoaderSettings| {
+                settings.load_meshes = RenderAssetUsages::all();
+            },
+        )),
+        Robot,
     ));
 }
 
-fn test_system(
+fn add_colliders(
+    world: &World,
+    mut commands: Commands,
+    meshes: Query<(Entity, &Mesh3d), With<LoadedMesh>>,
+    mesh_assets: Res<Assets<Mesh>>,
+) {
+    fn check_has_ancestor<T: Component>(world: &World, entity: Entity) -> bool {
+        let mut current = entity;
+        while let Some(child_of) = world.entity(current).get::<ChildOf>() {
+            let parent = child_of.parent();
+            if world.entity(parent).contains::<T>() {
+                return true;
+            }
+            current = parent;
+        }
+        return false;
+    }
+
+    for (entity, mesh_handle) in &meshes {
+        if let Some(mesh) = mesh_assets.get(mesh_handle) {
+            if check_has_ancestor::<Robot>(world, entity) {
+                if let Some(collider) = Collider::trimesh_from_mesh(mesh) {
+                    commands.entity(entity).insert((
+                        collider,
+                        CollisionLayers::new([GameLayer::Robot.to_bits()], [GameLayer::all_bits()]),
+                    ));
+                }
+            }
+
+            if check_has_ancestor::<Scene>(world, entity) {
+                if let Some(collider) = Collider::trimesh_from_mesh(mesh) {
+                    commands.entity(entity).insert(collider);
+                }
+            }
+        }
+        commands.entity(entity).remove::<LoadedMesh>();
+    }
+}
+
+fn camera_controller_system(
     cam: Single<(
         &Camera,
         &Projection,
@@ -185,7 +284,8 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(PhysicsPlugins::default())
-        .add_systems(Update, test_system)
+        .add_systems(Update, camera_controller_system)
         .add_systems(Startup, spawn)
+        .add_systems(Update, add_colliders)
         .run();
 }
