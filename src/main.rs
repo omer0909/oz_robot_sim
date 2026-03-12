@@ -9,18 +9,15 @@ use bevy::{
     light::{CascadeShadowConfigBuilder, light_consts::lux},
     post_process::bloom::Bloom,
     prelude::*,
+    scene::SceneInstanceReady,
     window::{CursorGrabMode, CursorOptions},
 };
+use serde::Deserialize;
 
 use std::f32::consts::PI;
 
 use avian3d::spatial_query::SpatialQueryFilter;
 use avian3d::{math::Quaternion, prelude::*};
-
-use bevy::asset::LoadContext;
-use bevy::ecs::world::EntityWorldMut;
-use bevy::gltf::extensions::{GltfExtensionHandler, GltfExtensionHandlers};
-use gltf;
 
 #[derive(Component, Default)]
 struct LookCamera {
@@ -33,51 +30,24 @@ struct LookCamera {
 struct Robot;
 
 #[derive(Component, Default)]
-struct Scene;
+struct MapGenerator {
+    pub ray_count: usize,
+}
 
-#[derive(PhysicsLayer, Default)]
+impl MapGenerator {
+    fn new() -> Self {
+        MapGenerator { ray_count: 1000 }
+    }
+}
+
+#[derive(Deserialize, PhysicsLayer, Default, Debug)]
 enum GameLayer {
     #[default]
     Default,
-    Robot,
+    RobotLayer,
 }
 
-#[derive(Component, Reflect)]
-#[reflect(Component)]
-struct LoadedMesh;
-
-#[derive(Default, Clone)]
-struct CollisionExtension;
-
-impl GltfExtensionHandler for CollisionExtension {
-    fn dyn_clone(&self) -> Box<dyn GltfExtensionHandler> {
-        Box::new(self.clone())
-    }
-
-    fn on_spawn_mesh_and_material(
-        &mut self,
-        _: &mut LoadContext<'_>,
-        _: &gltf::Primitive,
-        _: &gltf::Mesh,
-        _: &gltf::Material,
-        entity: &mut EntityWorldMut,
-    ) {
-        entity.insert(LoadedMesh);
-    }
-}
-
-fn spawn(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    asset_server: Res<AssetServer>,
-    handlers: ResMut<GltfExtensionHandlers>,
-) {
-    handlers
-        .0
-        .write_blocking()
-        .push(Box::new(CollisionExtension));
-
+fn spawn(mut commands: Commands, asset_server: Res<AssetServer>) {
     let texture_handle = asset_server.load("Ryfjallet_cubemap_bc7.ktx2");
     commands.spawn((
         Camera3d::default(),
@@ -115,15 +85,14 @@ fn spawn(
         Transform::from_xyz(5.0, 10.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
-    commands.spawn((
-        SceneRoot(asset_server.load_with_settings(
+    commands
+        .spawn(SceneRoot(asset_server.load_with_settings(
             "scene.glb#Scene0",
             |settings: &mut GltfLoaderSettings| {
                 settings.load_meshes = RenderAssetUsages::all();
             },
-        )),
-        Scene,
-    ));
+        )))
+        .observe(on_scene_spawn);
 
     commands.spawn((
         SceneRoot(asset_server.load_with_settings(
@@ -133,45 +102,37 @@ fn spawn(
             },
         )),
         Robot,
+        MapGenerator::new(),
     ));
 }
 
-fn add_colliders(
-    world: &World,
-    mut commands: Commands,
-    meshes: Query<(Entity, &Mesh3d), With<LoadedMesh>>,
-    mesh_assets: Res<Assets<Mesh>>,
+fn map_generator(
+    spatial_query: SpatialQuery,
+    mut map_generator: Query<(&MapGenerator, &GlobalTransform)>,
+    mut gizmos: Gizmos,
 ) {
-    fn check_has_ancestor<T: Component>(world: &World, entity: Entity) -> bool {
-        let mut current = entity;
-        while let Some(child_of) = world.entity(current).get::<ChildOf>() {
-            let parent = child_of.parent();
-            if world.entity(parent).contains::<T>() {
-                return true;
-            }
-            current = parent;
-        }
-        return false;
-    }
+    for (generator, transform) in map_generator.iter_mut() {
+        let origin = transform.translation() + Vec3::Y * 0.5;
+        let angle_step = (std::f32::consts::PI * 2.0) / generator.ray_count as f32;
 
-    for (entity, mesh_handle) in &meshes {
-        if let Some(mesh) = mesh_assets.get(mesh_handle) {
-            if check_has_ancestor::<Robot>(world, entity) {
-                if let Some(collider) = Collider::trimesh_from_mesh(mesh) {
-                    commands.entity(entity).insert((
-                        collider,
-                        CollisionLayers::new([GameLayer::Robot.to_bits()], [GameLayer::all_bits()]),
-                    ));
-                }
-            }
-
-            if check_has_ancestor::<Scene>(world, entity) {
-                if let Some(collider) = Collider::trimesh_from_mesh(mesh) {
-                    commands.entity(entity).insert(collider);
-                }
+        for i in 0..generator.ray_count {
+            let angle = i as f32 * angle_step;
+            let direction = {
+                let dir = Vec2::from_angle(angle);
+                Vec3::new(dir.x, 0.0, dir.y)
+            };
+            let filter = SpatialQueryFilter::from_mask(GameLayer::Default);
+            if let Some(hit) =
+                spatial_query.cast_ray(origin, Dir3::new_unchecked(direction), 10.0, true, &filter)
+            {
+                let hit_point = origin + direction * hit.distance;
+                gizmos.line(origin, hit_point, Color::linear_rgb(0.0, 1.0, 0.0));
+                gizmos.circle(hit_point, 0.1, Color::linear_rgb(1.0, 0.0, 0.0));
+            } else {
+                let end_point = origin + direction * 10.0;
+                gizmos.line(origin, end_point, Color::srgba(0.0, 1.0, 1.0, 0.3));
             }
         }
-        commands.entity(entity).remove::<LoadedMesh>();
     }
 }
 
@@ -280,12 +241,64 @@ fn camera_controller_system(
     }
 }
 
+#[derive(Deserialize, Debug)]
+struct BlenderBevyData {
+    bevy_data: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct BlenderObjectData {
+    components: BlenderComponentData,
+}
+
+#[derive(Deserialize, Debug)]
+struct BlenderMeshColliderData {
+    layer: GameLayer,
+}
+
+#[derive(Deserialize, Debug)]
+struct BlenderComponentData {
+    mesh_collider_fom_self: Option<BlenderMeshColliderData>,
+}
+
+fn on_scene_spawn(
+    trigger: On<SceneInstanceReady>,
+    mut commands: Commands,
+    children: Query<&Children>,
+    extras: Query<&GltfExtras>,
+    mesh_query: Query<Entity, With<Mesh3d>>,
+) {
+    for entity in children.iter_descendants(trigger.entity) {
+        let Ok(gltf_extras) = extras.get(entity) else {
+            continue;
+        };
+
+        let Ok(object_data) = serde_json::from_str::<BlenderBevyData>(&gltf_extras.value)
+            .and_then(|bevy_data| serde_json::from_str::<BlenderObjectData>(&bevy_data.bevy_data))
+        else {
+            continue;
+        };
+
+        if let Some(mesh_collider_data) = object_data.components.mesh_collider_fom_self
+            && let Ok(entity_children) = children.get(entity)
+        {
+            for child in mesh_query.iter_many(entity_children) {
+                commands.entity(child).insert((
+                    RigidBody::Static,
+                    ColliderConstructor::TrimeshFromMesh,
+                    CollisionLayers::new(mesh_collider_data.layer.to_bits(), LayerMask::ALL),
+                ));
+            }
+        }
+    }
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(PhysicsPlugins::default())
         .add_systems(Update, camera_controller_system)
         .add_systems(Startup, spawn)
-        .add_systems(Update, add_colliders)
+        .add_systems(Update, map_generator)
         .run();
 }
