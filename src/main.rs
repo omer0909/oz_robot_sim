@@ -1,3 +1,5 @@
+use avian3d::spatial_query::SpatialQueryFilter;
+use avian3d::{math::Quaternion, prelude::*};
 use bevy::ecs::prelude::*;
 use bevy::scene::prelude::*;
 use bevy::{
@@ -12,12 +14,10 @@ use bevy::{
     scene::SceneInstanceReady,
     window::{CursorGrabMode, CursorOptions},
 };
+use schemars::{JsonSchema, r#gen::SchemaSettings};
 use serde::Deserialize;
-
 use std::f32::consts::PI;
-
-use avian3d::spatial_query::SpatialQueryFilter;
-use avian3d::{math::Quaternion, prelude::*};
+use std::fs;
 
 #[derive(Component, Default)]
 struct LookCamera {
@@ -40,7 +40,7 @@ impl MapGenerator {
     }
 }
 
-#[derive(Deserialize, PhysicsLayer, Default, Debug)]
+#[derive(Deserialize, PhysicsLayer, JsonSchema, Default, Debug)]
 enum GameLayer {
     #[default]
     Default,
@@ -94,16 +94,18 @@ fn spawn(mut commands: Commands, asset_server: Res<AssetServer>) {
         )))
         .observe(on_scene_spawn);
 
-    commands.spawn((
-        SceneRoot(asset_server.load_with_settings(
-            "robot.glb#Scene0",
-            |settings: &mut GltfLoaderSettings| {
-                settings.load_meshes = RenderAssetUsages::all();
-            },
-        )),
-        Robot,
-        MapGenerator::new(),
-    ));
+    commands
+        .spawn((
+            SceneRoot(asset_server.load_with_settings(
+                "robot.glb#Scene0",
+                |settings: &mut GltfLoaderSettings| {
+                    settings.load_meshes = RenderAssetUsages::all();
+                },
+            )),
+            Robot,
+            MapGenerator::new(),
+        ))
+        .observe(on_scene_spawn);
 }
 
 fn map_generator(
@@ -246,17 +248,17 @@ struct BlenderBevyData {
     bevy_data: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct BlenderObjectData {
     components: BlenderComponentData,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct BlenderMeshColliderData {
     layer: GameLayer,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, JsonSchema, Debug)]
 struct BlenderComponentData {
     mesh_collider_fom_self: Option<BlenderMeshColliderData>,
 }
@@ -294,6 +296,15 @@ fn on_scene_spawn(
 }
 
 fn main() {
+    let mut settings = SchemaSettings::draft07();
+    settings.inline_subschemas = true;
+
+    let generator = settings.into_generator();
+    let sema = generator.into_root_schema_for::<BlenderObjectData>();
+
+    let sema_json = serde_json::to_string_pretty(&sema).unwrap();
+    fs::write("schema.json", &sema_json).expect("schema.json can not write!");
+
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(PhysicsPlugins::default())
