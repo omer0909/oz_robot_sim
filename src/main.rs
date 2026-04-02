@@ -1,30 +1,20 @@
+use avian3d::prelude::*;
 use avian3d::spatial_query::SpatialQueryFilter;
-use avian3d::{math::Quaternion, prelude::*};
 use bevy::ecs::prelude::*;
+
 use bevy::scene::prelude::*;
 use bevy::{
     asset::RenderAssetUsages,
     camera::Exposure,
     core_pipeline::{Skybox, tonemapping::Tonemapping},
     gltf::GltfLoaderSettings,
-    input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     light::{CascadeShadowConfigBuilder, light_consts::lux},
     post_process::bloom::Bloom,
     prelude::*,
-    scene::SceneInstanceReady,
-    window::{CursorGrabMode, CursorOptions},
 };
-use schemars::{JsonSchema, r#gen::SchemaSettings};
-use serde::Deserialize;
-use std::f32::consts::PI;
-use std::fs;
 
-#[derive(Component, Default)]
-struct LookCamera {
-    clicked_forward_distance: f32,
-    clicked_pos: Vec3,
-    camera_angle: Vec3,
-}
+mod blender_editor;
+mod camera_controller;
 
 #[derive(Component, Default)]
 struct Robot;
@@ -40,13 +30,6 @@ impl MapGenerator {
     }
 }
 
-#[derive(Deserialize, PhysicsLayer, JsonSchema, Default, Debug)]
-enum GameLayer {
-    #[default]
-    Default,
-    RobotLayer,
-}
-
 fn spawn(mut commands: Commands, asset_server: Res<AssetServer>) {
     let texture_handle = asset_server.load("Ryfjallet_cubemap_bc7.ktx2");
     commands.spawn((
@@ -60,7 +43,7 @@ fn spawn(mut commands: Commands, asset_server: Res<AssetServer>) {
         Exposure::BLENDER,
         Tonemapping::BlenderFilmic,
         Bloom::NATURAL,
-        LookCamera::default(),
+        camera_controller::components::LookCamera::default(),
     ));
 
     let cascade_shadow_config = CascadeShadowConfigBuilder {
@@ -92,7 +75,7 @@ fn spawn(mut commands: Commands, asset_server: Res<AssetServer>) {
                 settings.load_meshes = RenderAssetUsages::all();
             },
         )))
-        .observe(on_scene_spawn);
+        .observe(blender_editor::editor::on_scene_spawn);
 
     commands
         .spawn((
@@ -105,7 +88,7 @@ fn spawn(mut commands: Commands, asset_server: Res<AssetServer>) {
             Robot,
             MapGenerator::new(),
         ))
-        .observe(on_scene_spawn);
+        .observe(blender_editor::editor::on_scene_spawn);
 }
 
 fn map_generator(
@@ -123,7 +106,8 @@ fn map_generator(
                 let dir = Vec2::from_angle(angle);
                 Vec3::new(dir.x, 0.0, dir.y)
             };
-            let filter = SpatialQueryFilter::from_mask(GameLayer::Default);
+            let filter =
+                SpatialQueryFilter::from_mask(blender_editor::editor::GameLayer::default());
             if let Some(hit) =
                 spatial_query.cast_ray(origin, Dir3::new_unchecked(direction), 10.0, true, &filter)
             {
@@ -138,177 +122,13 @@ fn map_generator(
     }
 }
 
-fn camera_controller_system(
-    cam: Single<(
-        &Camera,
-        &Projection,
-        &mut Transform,
-        &GlobalTransform,
-        &mut LookCamera,
-    )>,
-    window: Single<&Window>,
-    spatial_query: SpatialQuery,
-    keyboard_input: Res<ButtonInput<KeyCode>>,
-    mouse_button_input: Res<ButtonInput<MouseButton>>,
-    accumulated_mouse_motion: Res<AccumulatedMouseMotion>,
-    accumulated_mouse_scroll: Res<AccumulatedMouseScroll>,
-    mut cursor_options: Single<&mut CursorOptions>,
-) {
-    let (
-        camera,
-        Projection::Perspective(perspective),
-        mut camera_transform,
-        camera_global_transform,
-        mut look_camera,
-    ) = cam.into_inner()
-    else {
-        return;
-    };
-
-    let ray = window
-        .cursor_position()
-        .and_then(|cursor_pos| {
-            camera
-                .viewport_to_world(camera_global_transform, cursor_pos)
-                .ok()
-        })
-        .unwrap_or(Ray3d::new(
-            camera_global_transform.translation(),
-            camera_global_transform.forward(),
-        ));
-
-    let distance = spatial_query
-        .cast_ray(
-            ray.origin,
-            ray.direction,
-            1000.0,
-            true,
-            &SpatialQueryFilter::default(),
-        )
-        .map(|hit| hit.distance)
-        .unwrap_or(2.0)
-        .max(0.5);
-
-    if mouse_button_input.just_pressed(MouseButton::Left) {
-        cursor_options.grab_mode = CursorGrabMode::Locked;
-        look_camera.clicked_forward_distance =
-            distance * ray.direction.dot(*camera_global_transform.forward());
-        look_camera.clicked_pos = camera_global_transform.translation() + ray.direction * distance;
-    }
-
-    if mouse_button_input.just_released(MouseButton::Left) {
-        cursor_options.grab_mode = CursorGrabMode::None;
-    }
-
-    if accumulated_mouse_scroll.delta != Vec2::ZERO {
-        let delta = accumulated_mouse_scroll.delta;
-        camera_transform.translation += ray.direction * delta.y * distance * 0.1;
-    }
-
-    if accumulated_mouse_motion.delta != Vec2::ZERO
-        && mouse_button_input.pressed(MouseButton::Left)
-        && (keyboard_input.pressed(KeyCode::ShiftLeft)
-            || keyboard_input.pressed(KeyCode::ShiftRight))
-    {
-        let delta = accumulated_mouse_motion.delta;
-
-        let factor = ((perspective.fov * 0.5).tan() / window.height())
-            * 2.
-            * look_camera.clicked_forward_distance;
-        camera_transform.translation += camera_global_transform.left() * delta.x * factor;
-        camera_transform.translation += camera_global_transform.up() * delta.y * factor;
-    }
-
-    if accumulated_mouse_motion.delta != Vec2::ZERO
-        && mouse_button_input.pressed(MouseButton::Left)
-        && !(keyboard_input.pressed(KeyCode::ShiftLeft)
-            || keyboard_input.pressed(KeyCode::ShiftRight))
-    {
-        let sensitivity = 0.002;
-        let delta = accumulated_mouse_motion.delta;
-        look_camera.camera_angle.x =
-            (look_camera.camera_angle.x - delta.y * sensitivity).clamp(-PI / 2.0, PI / 2.0);
-        look_camera.camera_angle.y += -delta.x * sensitivity;
-        let target = Quaternion::from_euler(
-            EulerRot::YXZ,
-            look_camera.camera_angle.y,
-            look_camera.camera_angle.x,
-            look_camera.camera_angle.z,
-        );
-        let to_pivot_world = look_camera.clicked_pos - camera_transform.translation;
-        let to_pivot_local = camera_transform.rotation.inverse() * to_pivot_world;
-        camera_transform.rotation = target;
-        let to_pivot_world_new = target * to_pivot_local;
-        camera_transform.translation = look_camera.clicked_pos - to_pivot_world_new;
-    }
-}
-
-#[derive(Deserialize, Debug)]
-struct BlenderBevyData {
-    bevy_data: String,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct BlenderObjectData {
-    components: BlenderComponentData,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct BlenderMeshColliderData {
-    layer: GameLayer,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-struct BlenderComponentData {
-    mesh_collider_fom_self: Option<BlenderMeshColliderData>,
-}
-
-fn on_scene_spawn(
-    trigger: On<SceneInstanceReady>,
-    mut commands: Commands,
-    children: Query<&Children>,
-    extras: Query<&GltfExtras>,
-    mesh_query: Query<Entity, With<Mesh3d>>,
-) {
-    for entity in children.iter_descendants(trigger.entity) {
-        let Ok(gltf_extras) = extras.get(entity) else {
-            continue;
-        };
-
-        let Ok(object_data) = serde_json::from_str::<BlenderBevyData>(&gltf_extras.value)
-            .and_then(|bevy_data| serde_json::from_str::<BlenderObjectData>(&bevy_data.bevy_data))
-        else {
-            continue;
-        };
-
-        if let Some(mesh_collider_data) = object_data.components.mesh_collider_fom_self
-            && let Ok(entity_children) = children.get(entity)
-        {
-            for child in mesh_query.iter_many(entity_children) {
-                commands.entity(child).insert((
-                    RigidBody::Static,
-                    ColliderConstructor::TrimeshFromMesh,
-                    CollisionLayers::new(mesh_collider_data.layer.to_bits(), LayerMask::ALL),
-                ));
-            }
-        }
-    }
-}
-
 fn main() {
-    let mut settings = SchemaSettings::draft07();
-    settings.inline_subschemas = true;
-
-    let generator = settings.into_generator();
-    let sema = generator.into_root_schema_for::<BlenderObjectData>();
-
-    let sema_json = serde_json::to_string_pretty(&sema).unwrap();
-    fs::write("schema.json", &sema_json).expect("schema.json can not write!");
+    blender_editor::editor::export_schema("schema.json");
 
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(PhysicsPlugins::default())
-        .add_systems(Update, camera_controller_system)
+        .add_plugins(camera_controller::CameraControllerPlugin)
         .add_systems(Startup, spawn)
         .add_systems(Update, map_generator)
         .run();
