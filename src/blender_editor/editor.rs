@@ -1,14 +1,36 @@
 use avian3d::prelude::*;
-use bevy::{prelude::*, scene::SceneInstanceReady};
-use schemars::{JsonSchema, r#gen::SchemaSettings};
+use bevy::{prelude::*, world_serialization::WorldInstanceReady};
+use schemars::JsonSchema;
+use schemars::generate::SchemaSettings;
 use serde::Deserialize;
 use std::fs;
+
+#[derive(Component)]
+pub struct Robot {
+    pub ray_count: usize,
+    pub lidar: Entity,
+    pub radius: f32,
+}
+
+impl Robot {
+    fn new(ray_count: usize, lidar: Entity, radius: f32) -> Self {
+        Robot {
+            ray_count,
+            lidar,
+            radius,
+        }
+    }
+}
+
+#[derive(JsonSchema, Deserialize, Debug)]
+#[schemars(extend("blender_object_ref" = "full_path"))]
+struct ObjectRef(String);
 
 #[derive(Deserialize, PhysicsLayer, JsonSchema, Default, Debug)]
 pub enum GameLayer {
     #[default]
     Default,
-    RobotLayer,
+    IgnoreLidar,
 }
 
 #[derive(Deserialize, Debug)]
@@ -27,8 +49,15 @@ struct BlenderMeshColliderData {
 }
 
 #[derive(Deserialize, JsonSchema, Debug)]
+struct RobotComponent {
+    lidar: ObjectRef,
+    footprint_circle_radius: f32,
+}
+
+#[derive(Deserialize, JsonSchema, Debug)]
 struct BlenderComponentData {
     mesh_collider_fom_self: Option<BlenderMeshColliderData>,
+    robot: Option<RobotComponent>,
 }
 
 pub fn export_schema(path: &str) {
@@ -43,11 +72,12 @@ pub fn export_schema(path: &str) {
 }
 
 pub fn on_scene_spawn(
-    trigger: On<SceneInstanceReady>,
+    trigger: On<WorldInstanceReady>,
     mut commands: Commands,
     children: Query<&Children>,
     extras: Query<&GltfExtras>,
     mesh_query: Query<Entity, With<Mesh3d>>,
+    name_query: Query<(Entity, &Name)>,
 ) {
     for entity in children.iter_descendants(trigger.entity) {
         let Ok(gltf_extras) = extras.get(entity) else {
@@ -70,6 +100,22 @@ pub fn on_scene_spawn(
                     CollisionLayers::new(mesh_collider_data.layer.to_bits(), LayerMask::ALL),
                 ));
             }
+        }
+
+        if let Some(robot) = object_data.components.robot {
+            let Some(target_entity) = name_query
+                .iter_many(children.iter_descendants(trigger.entity))
+                .find(|(_, name)| name.as_str() == "lidar")
+                .map(|(entity, _)| entity)
+            else {
+                continue;
+            };
+
+            commands.entity(entity).insert(Robot::new(
+                1000,
+                target_entity,
+                robot.footprint_circle_radius,
+            ));
         }
     }
 }

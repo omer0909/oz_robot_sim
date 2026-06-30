@@ -74,6 +74,8 @@ def props_to_dict(schema_props, properties, prefix=""):
             )
         else:
             result[key] = getattr(schema_props, prop_name, None)
+            if isinstance(result[key], bpy.types.Object):
+                result[key] = result[key].name
     return result
 
 
@@ -118,6 +120,10 @@ def build_props(properties, prefix=""):
                 items = [(e, e, "") for e in value["enum"]]
                 annotations[prop_name] = bpy.props.EnumProperty(
                     name=key, items=items, update=save_json
+                )
+            elif "blender_object_ref" in value:
+                annotations[prop_name] = bpy.props.PointerProperty(
+                    name=key, type=bpy.types.Object, update=save_json
                 )
             else:
                 annotations[prop_name] = bpy.props.StringProperty(

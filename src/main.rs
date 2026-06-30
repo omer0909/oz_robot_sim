@@ -2,13 +2,13 @@ use avian3d::prelude::*;
 use avian3d::spatial_query::SpatialQueryFilter;
 use bevy::ecs::prelude::*;
 
-use bevy::scene::prelude::*;
+use bevy::world_serialization::prelude::*;
 use bevy::{
     asset::RenderAssetUsages,
     camera::Exposure,
-    core_pipeline::{Skybox, tonemapping::Tonemapping},
+    core_pipeline::tonemapping::Tonemapping,
     gltf::GltfLoaderSettings,
-    light::{CascadeShadowConfigBuilder, light_consts::lux},
+    light::{CascadeShadowConfigBuilder, Skybox, light_consts::lux},
     post_process::bloom::Bloom,
     prelude::*,
 };
@@ -16,27 +16,13 @@ use bevy::{
 mod blender_editor;
 mod camera_controller;
 
-#[derive(Component, Default)]
-struct Robot;
-
-#[derive(Component, Default)]
-struct MapGenerator {
-    pub ray_count: usize,
-}
-
-impl MapGenerator {
-    fn new() -> Self {
-        MapGenerator { ray_count: 1000 }
-    }
-}
-
 fn spawn(mut commands: Commands, asset_server: Res<AssetServer>) {
     let texture_handle = asset_server.load("Ryfjallet_cubemap_bc7.ktx2");
     commands.spawn((
         Camera3d::default(),
         Transform::from_xyz(0.0, 0.0, 10.0),
         Skybox {
-            image: texture_handle.clone(),
+            image: Some(texture_handle.clone()),
             brightness: 1000.0,
             ..default()
         },
@@ -55,7 +41,7 @@ fn spawn(mut commands: Commands, asset_server: Res<AssetServer>) {
 
     commands.spawn((
         DirectionalLight {
-            shadows_enabled: true,
+            shadow_maps_enabled: true,
             illuminance: lux::OFFICE,
             ..default()
         },
@@ -69,35 +55,42 @@ fn spawn(mut commands: Commands, asset_server: Res<AssetServer>) {
     ));
 
     commands
-        .spawn(SceneRoot(asset_server.load_with_settings(
-            "scene.glb#Scene0",
-            |settings: &mut GltfLoaderSettings| {
-                settings.load_meshes = RenderAssetUsages::all();
-            },
-        )))
+        .spawn(WorldAssetRoot(
+            asset_server
+                .load_builder()
+                .with_settings(|settings: &mut GltfLoaderSettings| {
+                    settings.load_meshes = RenderAssetUsages::all();
+                })
+                .load("scene.glb#Scene0"),
+        ))
         .observe(blender_editor::editor::on_scene_spawn);
 
     commands
-        .spawn((
-            SceneRoot(asset_server.load_with_settings(
-                "robot.glb#Scene0",
-                |settings: &mut GltfLoaderSettings| {
-                    settings.load_meshes = RenderAssetUsages::all();
-                },
+        .spawn(
+            (WorldAssetRoot(
+                asset_server
+                    .load_builder()
+                    .with_settings(|settings: &mut GltfLoaderSettings| {
+                        settings.load_meshes = RenderAssetUsages::all();
+                    })
+                    .load("robot.glb#Scene0"),
             )),
-            Robot,
-            MapGenerator::new(),
-        ))
+        )
         .observe(blender_editor::editor::on_scene_spawn);
 }
 
 fn map_generator(
     spatial_query: SpatialQuery,
-    mut map_generator: Query<(&MapGenerator, &GlobalTransform)>,
+    mut robot: Query<&blender_editor::editor::Robot>,
+    transform_query: Query<&GlobalTransform>,
     mut gizmos: Gizmos,
 ) {
-    for (generator, transform) in map_generator.iter_mut() {
-        let origin = transform.translation() + Vec3::Y * 0.5;
+    for generator in robot.iter_mut() {
+        let Ok(lidar_transform) = transform_query.get(generator.lidar) else {
+            return;
+        };
+        let origin = lidar_transform.translation();
+
         let angle_step = (std::f32::consts::PI * 2.0) / generator.ray_count as f32;
 
         for i in 0..generator.ray_count {
@@ -123,6 +116,7 @@ fn map_generator(
 }
 
 fn main() {
+    #[cfg(debug_assertions)]
     blender_editor::editor::export_schema("schema.json");
 
     App::new()
