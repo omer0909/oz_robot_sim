@@ -66,7 +66,7 @@ pub fn camera_controller_system(
 
     if accumulated_mouse_scroll.delta != Vec2::ZERO {
         let delta = accumulated_mouse_scroll.delta;
-        camera_transform.translation += ray.direction * delta.y * distance * 0.1;
+        camera_transform.translation += ray.direction * delta.y * distance * 0.01;
     }
 
     if accumulated_mouse_motion.delta != Vec2::ZERO

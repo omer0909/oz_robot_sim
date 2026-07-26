@@ -1,7 +1,6 @@
 use avian3d::prelude::*;
 use avian3d::spatial_query::SpatialQueryFilter;
 use bevy::ecs::prelude::*;
-
 use bevy::world_serialization::prelude::*;
 use bevy::{
     asset::RenderAssetUsages,
@@ -15,6 +14,8 @@ use bevy::{
 
 mod blender_editor;
 mod camera_controller;
+mod mapping;
+mod navigation;
 
 fn spawn(mut commands: Commands, asset_server: Res<AssetServer>) {
     let texture_handle = asset_server.load("Ryfjallet_cubemap_bc7.ktx2");
@@ -66,50 +67,72 @@ fn spawn(mut commands: Commands, asset_server: Res<AssetServer>) {
         .observe(blender_editor::editor::on_scene_spawn);
 
     commands
-        .spawn(
-            (WorldAssetRoot(
-                asset_server
-                    .load_builder()
-                    .with_settings(|settings: &mut GltfLoaderSettings| {
-                        settings.load_meshes = RenderAssetUsages::all();
-                    })
-                    .load("robot.glb#Scene0"),
-            )),
-        )
+        .spawn(WorldAssetRoot(
+            asset_server
+                .load_builder()
+                .with_settings(|settings: &mut GltfLoaderSettings| {
+                    settings.load_meshes = RenderAssetUsages::all();
+                })
+                .load("robot.glb#Scene0"),
+        ))
         .observe(blender_editor::editor::on_scene_spawn);
 }
 
-fn map_generator(
+fn move_system(
+    time: Res<Time>,
+    mut query: Query<&mut Transform, With<blender_editor::editor::Robot>>,
+    robot: Query<&blender_editor::editor::Robot>,
     spatial_query: SpatialQuery,
-    mut robot: Query<&blender_editor::editor::Robot>,
-    transform_query: Query<&GlobalTransform>,
-    mut gizmos: Gizmos,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
 ) {
-    for generator in robot.iter_mut() {
-        let Ok(lidar_transform) = transform_query.get(generator.lidar) else {
-            return;
+    for mut transform in &mut query {
+        let rotation_factor = {
+            let mut result = 0.0;
+            if keyboard_input.pressed(KeyCode::ArrowLeft) {
+                result += 1.0;
+            }
+            if keyboard_input.pressed(KeyCode::ArrowRight) {
+                result -= 1.0;
+            }
+            result
         };
-        let origin = lidar_transform.translation();
+        transform.rotate_y(60.0_f32.to_radians() * time.delta_secs() * rotation_factor);
 
-        let angle_step = (std::f32::consts::PI * 2.0) / generator.ray_count as f32;
+        let movement_factor = {
+            let mut result = 0.0;
+            if keyboard_input.pressed(KeyCode::ArrowUp) {
+                result += 1.0;
+            }
+            if keyboard_input.pressed(KeyCode::ArrowDown) {
+                result -= 1.0;
+            }
+            result
+        };
 
-        for i in 0..generator.ray_count {
-            let angle = i as f32 * angle_step;
-            let direction = {
-                let dir = Vec2::from_angle(angle);
-                Vec3::new(dir.x, 0.0, dir.y)
-            };
+        let movement = transform.forward() * 1.0 * movement_factor * time.delta_secs();
+
+        let robot_height = 1.5;
+        let Ok(robot) = robot.single() else {
+            continue;
+        };
+        if let Ok(direction) = Dir3::new(movement) {
+            let shape = Collider::cylinder(robot.radius, robot_height);
+            let config = ShapeCastConfig::from_max_distance(movement.length() + 0.02);
             let filter =
                 SpatialQueryFilter::from_mask(blender_editor::editor::GameLayer::default());
-            if let Some(hit) =
-                spatial_query.cast_ray(origin, Dir3::new_unchecked(direction), 10.0, true, &filter)
-            {
-                let hit_point = origin + direction * hit.distance;
-                gizmos.line(origin, hit_point, Color::linear_rgb(0.0, 1.0, 0.0));
-                gizmos.circle(hit_point, 0.1, Color::linear_rgb(1.0, 0.0, 0.0));
-            } else {
-                let end_point = origin + direction * 10.0;
-                gizmos.line(origin, end_point, Color::srgba(0.0, 1.0, 1.0, 0.3));
+            let has_collision = spatial_query
+                .cast_shape(
+                    &shape,
+                    transform.translation + Vec3::new(0.0, robot_height / 2.0 + 0.05, 0.0),
+                    transform.rotation,
+                    direction,
+                    &config,
+                    &filter,
+                )
+                .is_some();
+
+            if !has_collision {
+                transform.translation += movement;
             }
         }
     }
@@ -124,6 +147,10 @@ fn main() {
         .add_plugins(PhysicsPlugins::default())
         .add_plugins(camera_controller::CameraControllerPlugin)
         .add_systems(Startup, spawn)
-        .add_systems(Update, map_generator)
+        .add_systems(Update, mapping::systems::map_generator)
+        .add_systems(Update, move_system)
+        .add_systems(Update, navigation::systems::process_moving_target)
+        .add_systems(Update, navigation::systems::check_go_target_comand)
+        .insert_resource(mapping::resources::Map::new())
         .run();
 }

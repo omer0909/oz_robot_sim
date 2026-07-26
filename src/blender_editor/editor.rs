@@ -10,6 +10,7 @@ pub struct Robot {
     pub ray_count: usize,
     pub lidar: Entity,
     pub radius: f32,
+    pub slam_active: bool,
 }
 
 impl Robot {
@@ -18,6 +19,7 @@ impl Robot {
             ray_count,
             lidar,
             radius,
+            slam_active: true,
         }
     }
 }
@@ -112,7 +114,7 @@ pub fn on_scene_spawn(
             };
 
             commands.entity(entity).insert(Robot::new(
-                1000,
+                400,
                 target_entity,
                 robot.footprint_circle_radius,
             ));
