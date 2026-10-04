@@ -107,7 +107,7 @@ pub fn on_scene_spawn(
         if let Some(robot) = object_data.components.robot {
             let Some(target_entity) = name_query
                 .iter_many(children.iter_descendants(trigger.entity))
-                .find(|(_, name)| name.as_str() == "lidar")
+                .find(|(_, name)| name.as_str() == robot.lidar.0)
                 .map(|(entity, _)| entity)
             else {
                 continue;
