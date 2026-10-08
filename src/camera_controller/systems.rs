@@ -50,14 +50,13 @@ pub fn camera_controller_system(
         .cast_ray(ray, &MeshRayCastSettings::default())
         .first()
         .map(|(_entity, hit)| hit.distance)
-        .unwrap_or(2.0)
-        .max(0.5);
+        .unwrap_or(2.0);
 
     if mouse_button_input.just_pressed(MouseButton::Left) {
         cursor_options.grab_mode = CursorGrabMode::Locked;
         look_camera.clicked_forward_distance =
             distance * ray.direction.dot(*camera_global_transform.forward());
-        look_camera.clicked_pos = camera_global_transform.translation() + ray.direction * distance;
+        look_camera.clicked_pos = ray.get_point(distance);
     }
 
     if mouse_button_input.just_released(MouseButton::Left) {
@@ -66,7 +65,7 @@ pub fn camera_controller_system(
 
     if accumulated_mouse_scroll.delta != Vec2::ZERO {
         let delta = accumulated_mouse_scroll.delta;
-        camera_transform.translation += ray.direction * delta.y * distance * 0.01;
+        camera_transform.translation += ray.direction * delta.y * distance.max(0.5) * 0.01;
     }
 
     if accumulated_mouse_motion.delta != Vec2::ZERO

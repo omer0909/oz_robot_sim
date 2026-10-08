@@ -114,7 +114,7 @@ pub fn on_scene_spawn(
             };
 
             commands.entity(entity).insert(Robot::new(
-                400,
+                500,
                 target_entity,
                 robot.footprint_circle_radius,
             ));

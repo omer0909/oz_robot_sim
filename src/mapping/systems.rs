@@ -20,6 +20,15 @@ pub fn map_generator(
         return;
     }
 
+    const SCAN_HZ: f32 = 10.0;
+
+    *acc += time.delta_secs();
+    if *acc >= 1.0 / SCAN_HZ {
+        *acc -= 1.0 / SCAN_HZ;
+    } else {
+        return;
+    }
+
     for generator in robot.iter_mut() {
         if !generator.slam_active {
             continue;
@@ -74,31 +83,25 @@ pub fn map_generator(
 
         map_data.set_lidar_segmants(Vec2::new(origin.x, origin.z), lidar_segmants);
 
-        *acc += time.delta_secs();
-
-        if *acc >= 1.0 / 2.0 {
-            *acc -= 1.0 / 2.0;
-
-            // let image_pixels: Vec<u8> = map_data
-            //     .data
-            //     .iter()
-            //     .map(|val| match val {
-            //         MapPixel::Undefined => 205,
-            //         MapPixel::Free => 254,
-            //         MapPixel::Obstacle => 0,
-            //         _ => 205,
-            //     })
-            //     .collect();
-
-            // image::save_buffer(
-            //     "map.png",
-            //     &image_pixels,
-            //     map_data.size.0 as u32,
-            //     map_data.size.1 as u32,
-            //     image::ExtendedColorType::L8,
-            // )
-            // .unwrap();
-        }
+        // let image_pixels: Vec<u8> = map_data
+        //     .data
+        //     .iter()
+        //     .map(|val| match val {
+        //         MapPixel::Undefined => 205,
+        //         MapPixel::Free => 254,
+        //         MapPixel::Obstacle => 0,
+        //         _ => 205,
+        //     })
+        //     .collect();
+        //
+        // image::save_buffer(
+        //     "map.png",
+        //     &image_pixels,
+        //     map_data.size.0 as u32,
+        //     map_data.size.1 as u32,
+        //     image::ExtendedColorType::L8,
+        // )
+        // .unwrap();
 
         // lz4_flex
     }
