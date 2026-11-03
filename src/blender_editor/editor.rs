@@ -95,7 +95,7 @@ pub fn on_scene_spawn(
         if let Some(mesh_collider_data) = object_data.components.mesh_collider_fom_self
             && let Ok(entity_children) = children.get(entity)
         {
-            for child in mesh_query.iter_many(entity_children) {
+            for child in mesh_query.iter_many(entity_children).flatten() {
                 commands.entity(child).insert((
                     RigidBody::Static,
                     ColliderConstructor::TrimeshFromMesh,
@@ -107,6 +107,7 @@ pub fn on_scene_spawn(
         if let Some(robot) = object_data.components.robot {
             let Some(target_entity) = name_query
                 .iter_many(children.iter_descendants(trigger.entity))
+                .flatten()
                 .find(|(_, name)| name.as_str() == robot.lidar.0)
                 .map(|(entity, _)| entity)
             else {

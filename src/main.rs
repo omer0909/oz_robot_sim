@@ -7,7 +7,7 @@ use bevy::{
     camera::Exposure,
     core_pipeline::tonemapping::Tonemapping,
     gltf::GltfLoaderSettings,
-    light::{CascadeShadowConfigBuilder, Skybox, light_consts::lux},
+    light::{CascadeShadowConfigBuilder, light_consts::lux},
     post_process::bloom::Bloom,
     prelude::*,
 };
@@ -18,64 +18,56 @@ mod mapping;
 mod navigation;
 
 fn spawn(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let texture_handle = asset_server.load("Ryfjallet_cubemap_bc7.ktx2");
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(0.0, 0.0, 10.0),
-        Skybox {
-            image: Some(texture_handle.clone()),
-            brightness: 1000.0,
-            ..default()
-        },
-        Exposure::BLENDER,
-        Tonemapping::BlenderFilmic,
-        Bloom::NATURAL,
-        camera_controller::components::LookCamera::default(),
+    let load_glb = |path: &'static str| {
+        asset_server
+            .load_builder()
+            .with_settings(|settings: &mut GltfLoaderSettings| {
+                settings.load_meshes = RenderAssetUsages::all();
+            })
+            .load(path)
+    };
+
+    commands.spawn_scene_list(world(
+        load_glb("scene.glb#Scene0"),
+        load_glb("robot.glb#Scene0"),
     ));
+}
 
-    let cascade_shadow_config = CascadeShadowConfigBuilder {
-        first_cascade_far_bound: 0.3,
-        maximum_distance: 3.0,
-        ..default()
-    }
-    .build();
-
-    commands.spawn((
+fn world(scene: Handle<WorldAsset>, robot: Handle<WorldAsset>) -> impl SceneList {
+    bsn_list! {
+        Camera3d
+        Transform::from_xyz(0.0, 0.0, 10.0)
+        Camera {
+            clear_color: ClearColorConfig::Custom(Color::srgb(0.25, 0.25, 0.25)),
+        }
+        EnvironmentMapLight {
+            diffuse_map: "witsand_woolshop_4k_diffuse.ktx2",
+            specular_map: "witsand_woolshop_4k_specular.ktx2",
+            intensity: 1000.0,
+        }
+        Exposure::BLENDER
+        Tonemapping::BlenderFilmic
+        Bloom::NATURAL
+        Msaa::Sample4
+        camera_controller::components::LookCamera
+        --
         DirectionalLight {
             shadow_maps_enabled: true,
-            illuminance: lux::OFFICE,
+            illuminance: lux::AMBIENT_DAYLIGHT,
+        }
+        Transform::from_xyz(2.0, 1.0, 1.0).looking_at(Vec3::ZERO, Vec3::Z)
+        CascadeShadowConfigBuilder {
+            maximum_distance: 30.0,
             ..default()
-        },
-        Transform::from_xyz(2.0, 1.0, 1.0).looking_at(Vec3::ZERO, Vec3::Z),
-        cascade_shadow_config,
-    ));
-
-    commands.spawn((
-        DirectionalLight::default(),
-        Transform::from_xyz(5.0, 10.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    commands
-        .spawn(WorldAssetRoot(
-            asset_server
-                .load_builder()
-                .with_settings(|settings: &mut GltfLoaderSettings| {
-                    settings.load_meshes = RenderAssetUsages::all();
-                })
-                .load("scene.glb#Scene0"),
-        ))
-        .observe(blender_editor::editor::on_scene_spawn);
-
-    commands
-        .spawn(WorldAssetRoot(
-            asset_server
-                .load_builder()
-                .with_settings(|settings: &mut GltfLoaderSettings| {
-                    settings.load_meshes = RenderAssetUsages::all();
-                })
-                .load("robot.glb#Scene0"),
-        ))
-        .observe(blender_editor::editor::on_scene_spawn);
+        }
+        .build()
+        --
+        WorldAssetRoot({scene})
+        on(blender_editor::editor::on_scene_spawn)
+        --
+        WorldAssetRoot({robot})
+        on(blender_editor::editor::on_scene_spawn)
+    }
 }
 
 fn move_system(
